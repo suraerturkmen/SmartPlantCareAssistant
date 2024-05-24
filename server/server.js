@@ -1,11 +1,13 @@
 const express = require("express");
-const app = express();
-const PORT = 8080;
 const cors = require("cors");
 const mqtt = require("mqtt");
 const sqlite3 = require("sqlite3").verbose();
 
+const app = express();
+const PORT = 8080;
+
 app.use(cors());
+app.use(express.json()); // Middleware to parse JSON bodies
 
 // SQLite database setup
 const db = new sqlite3.Database("./mqtt_messages.db", (err) => {
@@ -22,43 +24,30 @@ const db = new sqlite3.Database("./mqtt_messages.db", (err) => {
   }
 });
 
-let mqttClient;
-
-// change the RASPERRYPI_BROKER to your broker IP
-const RASPERRYPI_BROKER = "192.168.100.22:1883";
+const RASPERRYPI_BROKER = "192.168.1.2"; // Broker IP
 const clientId = "client" + Math.random().toString(36).substring(7);
-const host = `ws://${RASPERRYPI_BROKER}/mqtt`;
-
-const options = {
-  keepalive: 60,
+const mqttOptions = {
   clientId: clientId,
-  protocolId: "MQTT",
-  protocolVersion: 4,
-  clean: true,
-  reconnectPeriod: 1000,
-  connectTimeout: 30 * 1000,
+  protocol: "mqtt",
 };
 
-mqttClient = mqtt.connect(host, options);
+const mqttClient = mqtt.connect(`mqtt://${RASPERRYPI_BROKER}`, mqttOptions);
 
 mqttClient.on("error", (err) => {
-  console.log("Error: ", err);
-  mqttClient.end();
-});
-
-mqttClient.on("reconnect", () => {
-  console.log("Reconnecting...");
+  console.log("Error:", err);
 });
 
 mqttClient.on("connect", () => {
-  console.log("Client connected:" + clientId);
+  console.log("MQTT Client connected:", clientId);
+  mqttClient.subscribe("message", (err) => {
+    if (err) {
+      console.error("Error subscribing to MQTT topic:", err);
+    }
+  });
 });
 
-// Received
-mqttClient.on("message", (topic, message, packet) => {
-  console.log(
-    "Received Message: " + message.toString() + "\nOn topic: " + topic
-  );
+mqttClient.on("message", (topic, message) => {
+  console.log("Received Message:", message.toString(), "on topic:", topic);
   const msg = message.toString();
   db.run(`INSERT INTO messages (message) VALUES (?)`, [msg], (err) => {
     if (err) {
@@ -67,10 +56,9 @@ mqttClient.on("message", (topic, message, packet) => {
   });
 });
 
-// Route to get the last 30 messages
 app.get("/api/mqtt_messages", (req, res) => {
   db.all(
-    `SELECT message FROM messages ORDER BY id DESC LIMIT 30`,
+    `SELECT message FROM messages ORDER BY id DESC LIMIT 1`,
     (err, rows) => {
       if (err) {
         console.error("Error getting messages from database:", err.message);
@@ -83,31 +71,21 @@ app.get("/api/mqtt_messages", (req, res) => {
   );
 });
 
-// Mock data for home endpoint
-app.get("/api/home", (req, res) => {
-  res.json({
-    messages: [
-      {
-        temperature: "26",
-        humidity: "15%",
-        lightness: "10",
-      },
-      {
-        temperature: "25",
-        humidity: "14%",
-        lightness: "9",
-      },
-      {
-        temperature: "27",
-        humidity: "12%",
-        lightness: "11",
-      },
-      {
-        temperature: "28",
-        humidity: "10%",
-        lightness: "13",
-      },
-    ],
+app.post("/api/giveWater", (req, res) => {
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: "Message is required" });
+  }
+  console.log("Received message:", message);
+
+  mqttClient.publish("home/garden/water", message, (err) => {
+    if (err) {
+      console.error("Error publishing message:", err.message);
+      return res.status(500).json({ error: "Failed to publish message" });
+    }
+
+    console.log(`Message: "${message}" published to topic: "home/garden/water"`);
+    res.status(200).json({ success: true, message: "Message published" });
   });
 });
 
